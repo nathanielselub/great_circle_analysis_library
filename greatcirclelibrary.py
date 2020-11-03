@@ -623,6 +623,10 @@ def complete_minimization_evaluator(dipole, alms, index, gc_pix, nside):
     return np.var(gc_vars(gc_pix, hp.sphtfunc.alm2map(alms + new_dipole, nside,
                                                       verbose=False)))
 
+#
+# HELPER FUNCTIONS
+#
+
 
 def get_l(alms, L):
     """Return the specified multipole moment from the alms.
