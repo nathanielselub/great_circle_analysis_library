@@ -2,14 +2,16 @@
 
 import numpy as np
 import healpy as hp
-from multiprocessing import Pool
 from scipy.optimize import differential_evolution
-from numba import guvectorize, int64, float64, prange, jit
-from functools import partial
+from scipy.spatial.transform import Rotation as R
+from numba import guvectorize, int64, float64, prange, jit, njit
 
 NSIDE = 256
-DTHETA_INC = 0.14
+NPIX = hp.nside2npix(NSIDE)
+GC_N = 4096
+MASK_ANGLE = np.pi/8
 DIPOLE_RANGE = (10, 100)
+CORR_FUNC_RES = 1000
 AXIS_OF_EVIL_ANGLE = [110 * np.pi / 180, 60 * np.pi / 180]
 
 
@@ -282,90 +284,85 @@ def generate_random_dipole_reorientation_simulations(alms, n):
 
     return simulations
 
+
 #
 # GREAT CIRCLE GENERATION FUNCTIONS
 #
 
-
-def great_circle_from_seed_pixel(pixel, nside):
-    """Generate the equatorial great circle from a pixel.
-
-    Parameters
-    ----------
-    pixel : int
-        The pixel from which the equatorial great circle is generated.
-    nside : int
-        The NSIDE of the map on which the great circle will be valid.
-
-    Returns
-    -------
-    np.ndarray
-        The indices of the pixels that constitute the great circle.
-
-    """
-    pixel_size = hp.pixelfunc.nside2resol(nside)
-
-    return np.intersect1d(hp.query_disc(nside,
-                                        hp.pixelfunc.pix2vec(nside, pixel),
-                                        np.pi / 2. + pixel_size),
-                          hp.query_disc(nside, tuple(-np.array(
-                              hp.pixelfunc.pix2vec(nside, pixel))),
-        (np.pi / 2. + pixel_size)),
-        assume_unique=True)
-
-
-def generate_great_circles(nside=NSIDE, dtheta_inc=DTHETA_INC):
+def generate_great_circles(gc_n=GC_N, nside=NSIDE, mask_angle=MASK_ANGLE):
     """Generate a set of great circles.
 
     Parameters
     ----------
+    gc_n : int
+        The number of great circles to be generated.
     nside : int
         The NSIDE of the map on which the great circles will be valid.
-    dtheta_inc : float
-        The approximate angular spacing between the pixels used to generate the
-        great circles.
+    mask_angle : float
+        The minimum angular distance between every great circle's axis and the
+        z-axis pole.
 
     Returns
     -------
     np.ndarray
-        A tensor containing the great circles. The great circles vary in
-        length, so they are padded in order to convert the jagged array of
-        great circles into a tensor. This allows them to be vectorized by
-        numba, which greatly increases the speed of statistical calculations by
-        allowing them to be performed in parallel. In each great circle, the
-        true length of the great circle is stored before the index of the first
-        pixel, so it can be used to avoid unnecessary operations later.
-
+        A tensor containing the great circles.
     """
-    npix = int(4. * np.pi / (dtheta_inc / 2) ** 2)
+    npoint = 8 * nside
 
-    seed_pixels = []
+    phi = np.random.uniform(0., 2 * np.pi, (gc_n, 1))
+    theta = np.arcsin(np.random.uniform(np.sin(- np.pi / 2 + mask_angle),
+                                        np.sin(np.pi/2 - mask_angle),
+                                        (gc_n, 1))) + np.pi / 2
+    rotation_1 = R.from_rotvec(np.pad(theta, [(0, 0), (1, 1)]))
+    rotation_2 = R.from_rotvec(np.pad(phi, [(0, 0), (2, 0)]))
+    random_rotation = rotation_2 * rotation_1
 
-    for i in range(npix):
-        phi = np.random.uniform(0., 2 * np.pi)
-        theta = np.arcsin(np.random.uniform(-1., 1.)) + np.pi / 2
-        seed_pixels.append(hp.pixelfunc.ang2pix(nside, theta, phi))
+    circ_angs = np.linspace(0, 2 * np.pi, npoint)
+    circ_coords = np.pad(np.vstack((np.cos(circ_angs), np.sin(circ_angs))),
+                         [(0, 1), (0, 0)]).T
 
-    partial_function = partial(great_circle_from_seed_pixel, nside=nside)
+    gc_list = np.empty([gc_n, npoint], dtype=int)
 
-    with Pool(processes=None) as pool:
-        gc_pix_list = list(pool.map(partial_function, seed_pixels))
+    for i in prange(gc_n):
+        gc = random_rotation[i].apply(circ_coords)
+        gc_list[i] = hp.vec2pix(nside, gc[:, 0], gc[:, 1], gc[:, 2])
 
-    max_length = max(list(map(len, gc_pix_list)))
-
-    gc_pix_tensor = []
-
-    for gc in gc_pix_list:
-        gc_pix_tensor.append(np.pad(gc, (1, max_length - len(gc)),
-                                    'constant',
-                                    constant_values=(len(gc) + 1, 999999)))
-
-    return np.array(gc_pix_tensor)
+    return gc_list
 
 
 #
 # STATISTICAL CALCULATION FUNCTIONS
 #
+
+@jit(fastmath=True)
+def gc_power_spectra(gc_pix, alms, nside=NSIDE):
+    """Get the power spectra of great circles from multiple maps.
+
+    Parameters
+    ----------
+    gc_pix : np.ndarray
+        The great circles whose power spectra are to be calculated.
+    alms : np.ndarray
+        The set of maps in alm form whose great circle power spectra are to be
+        calculated.
+    nside : int
+        The NSIDE of the maps when the power spectra of the great circles are
+        calculated.
+
+    Returns
+    -------
+    np.ndarray
+        The power spectra of great circles from multiple maps.
+
+    """
+    spec = np.empty([alms.shape[0], gc_pix.shape[0], 1 + gc_pix.shape[1] // 2])
+    for i in prange(alms.shape[0]):
+        current_map = hp.sphtfunc.alm2map(alms[i], nside, verbose=False)
+        for j in prange(gc_pix.shape[0]):
+            spec[i][j] = np.fft.rfft(current_map[gc_pix[j]])
+
+    return np.abs(spec) ** 2
+
 
 @guvectorize([(int64[:], float64[:], float64[:])], '(m),(n)->()',
              target='parallel', nopython=True)
@@ -382,7 +379,7 @@ def gc_vars(gc_pix, my_map, res):
         The variances of the great circles.
 
     """
-    res[0] = np.var(my_map[gc_pix[1:gc_pix[0]]])
+    res[0] = np.var(my_map[gc_pix])
 
 
 @jit(parallel=True)
@@ -430,7 +427,7 @@ def gc_means(gc_pix, my_map, res):
         The means of the great circles.
 
     """
-    res[0] = np.mean(my_map[gc_pix[1:gc_pix[0]]])
+    res[0] = np.mean(my_map[gc_pix])
 
 
 @jit(parallel=True)
@@ -461,6 +458,29 @@ def multi_gc_means(gc_pix, alms, nside=NSIDE):
                                                             verbose=False))
 
     return vars_sims
+
+
+def correlation_function(cls, res=CORR_FUNC_RES):
+    """Get the means of great circles from multiple maps.
+
+    Parameters
+    ----------
+    cls : np.ndarray
+        The cls with which the correlation function is calculated.
+    res : int
+        The number of points at which the correlation function is calculated.
+
+    Returns
+    -------
+    np.ndarray
+        The values of the correlation function.
+
+    """
+    for L in range(cls.shape[0]):
+        cls[L] = cls[L] * ((2. * L + 1.)/(4. * np.pi))
+
+    return np.polynomial.legendre.legval(np.cos(np.linspace(0, np.pi, res)),
+                                         cls)
 
 
 #
