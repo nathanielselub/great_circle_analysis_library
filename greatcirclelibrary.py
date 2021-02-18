@@ -355,11 +355,12 @@ def gc_power_spectra(gc_pix, alms, nside=NSIDE):
         The power spectra of great circles from multiple maps.
 
     """
-    spec = np.empty([alms.shape[0], gc_pix.shape[0], 1 + gc_pix.shape[1] // 2])
+    spec = np.empty([alms.shape[0], gc_pix.shape[0], 1 + gc_pix.shape[1] // 2],
+                    dtype='complex')
     for i in prange(alms.shape[0]):
-        current_map = hp.sphtfunc.alm2map(alms[i], nside, verbose=False)
-        for j in prange(gc_pix.shape[0]):
-            spec[i][j] = np.fft.rfft(current_map[gc_pix[j]])
+        spec[i] = np.fft.rfft(np.take(hp.sphtfunc.alm2map(alms[i], nside,
+                                                          verbose=False),
+                                      gc_pix), axis=1)
 
     return np.abs(spec) ** 2
 
@@ -451,13 +452,13 @@ def multi_gc_means(gc_pix, alms, nside=NSIDE):
         The means of great circles from multiple maps.
 
     """
-    vars_sims = np.zeros([alms.shape[0], gc_pix.shape[0]])
+    means_sims = np.zeros([alms.shape[0], gc_pix.shape[0]])
 
     for i in prange(alms.shape[0]):
-        vars_sims[i] = gc_means(gc_pix, hp.sphtfunc.alm2map(alms[i], nside,
-                                                            verbose=False))
+        means_sims[i] = gc_means(gc_pix, hp.sphtfunc.alm2map(alms[i], nside,
+                                                             verbose=False))
 
-    return vars_sims
+    return means_sims
 
 
 def correlation_function(cls, res=CORR_FUNC_RES):
