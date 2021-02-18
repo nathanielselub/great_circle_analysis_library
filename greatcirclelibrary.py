@@ -355,13 +355,14 @@ def gc_power_spectra(gc_pix, alms, nside=NSIDE):
         The power spectra of great circles from multiple maps.
 
     """
-    spec = np.empty([alms.shape[0], gc_pix.shape[0], 1 + gc_pix.shape[1] // 2])
+    spc = np.empty([alms.shape[0], gc_pix.shape[0], 1 + gc_pix.shape[1] // 2])
     for i in prange(alms.shape[0]):
-        spec[i] = np.fft.rfft(np.take(hp.sphtfunc.alm2map(alms[i], nside,
-                                                          verbose=False),
-                                      gc_pix), axis=1)
+        spc[i] = np.abs(np.fft.rfft(np.take(hp.sphtfunc.alm2map(alms[i],
+                                                                nside,
+                                                                verbose=False),
+                                            gc_pix), axis=1)) ** 2
 
-    return np.abs(spec) ** 2
+    return spc
 
 
 @guvectorize([(int64[:], float64[:], float64[:])], '(m),(n)->()',
