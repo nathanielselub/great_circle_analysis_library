@@ -362,7 +362,7 @@ def gc_power_spectra(gc_pix, alms, nside=NSIDE):
                                                           verbose=False),
                                       gc_pix), axis=1)
 
-    return np.abs(spec) ** 2
+    return np.abs(spec / gc_pix.shape[1]) ** 2
 
 
 @guvectorize([(int64[:], float64[:], float64[:])], '(m),(n)->()',
