@@ -1,2 +1,2 @@
-# great_circle_analysis_library
+# great-circle-library
 A library to help analyze great circles in the CMB sky.
