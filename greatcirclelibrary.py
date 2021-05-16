@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation as R
 from numba import guvectorize, int64, float64, prange, jit
 
 NSIDE = 256
-N_GC = 5000
+N_GC = 20000
 N_P = 2000
 N_SIMS = 10000
 PARS = camb.CAMBparams(min_l=1)
